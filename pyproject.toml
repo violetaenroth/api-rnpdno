@@ -1,0 +1,18 @@
+[project]
+name = "api-rnpdno"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.13.5",
+    "loguru>=0.7.3",
+    "matplotlib>=3.10.8",
+    "pandas>=3.0.0",
+    "pycryptodome>=3.23.0",
+    "pymysql>=1.1.2",
+    "requests>=2.32.5",
+    "seaborn>=0.13.2",
+    "selenium>=4.34.2",
+    "sqlalchemy>=2.0.45",
+]
