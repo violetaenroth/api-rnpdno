@@ -1,0 +1,1071 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600&family=IBM+Plex+Sans:wght@400;500&family=Fira+Code:wght@400;500&display=swap"
+        rel="stylesheet">
+    <title>Reverse-engineering del RNPDNO</title>
+</head>
+
+<body>
+
+    <div class="wrapper">
+        <!-- SECTION 0: TABLE OF CONTENTS -->
+        <aside class="toc">
+            <div class="toc-title">Contenido</div>
+            <nav>
+                <a href="#funcionamiento">Funcionamiento UI</a>
+                <a href="#discrepancias_filtros">Discrepancias</a>
+                <a href="#backend">Funcionamiento de la API</a>
+                <a href="#inspector">Inspector web</a>
+                <a href="#guia_uso">Guía de uso</a>
+                <a href="#experimentos">Experimentos</a>
+                <a href="#conclusiones">Conclusiones</a>
+
+            </nav>
+        </aside>
+
+        <!-- ====== MAIN CONTENT ====== -->
+        <main class="container">
+            <div class="meta">Mayo 2026</div>
+            <h1>Reverse-engineering del RNPDNO</h1>
+            El <strong>Registro Nacional de Personas Desaparecidas y No Localizadas (RNPD)</strong> de México
+            mantiene una base de datos pública de más de 132,000 registros de personas desaparecidas. Sin embargo,
+            su API no está documentada públicamente y utiliza un sistema de cifrado que dificulta el acceso programático
+            a
+            los datos.
+            Este proyecto documenta el flujo completo de autenticación, cifrado y comunicación con la API del
+            RNPDNO, desde la generación del token JWT hasta la estructura de las peticiones. El objetivo era extraer
+            la base de datos completa de personas desaparecidas, pero se descubrieron
+            múltiples limitaciones técnicas que limitan el acceso masivo a estos datos públicos (es difícil
+            determinar si es a propósito o es solo el resultado de una mala implementación).
+            </p>
+            <h3>Hallazgos más importantes</h3>
+            <p>
+                <strong>⚫ La descarga completa es prácticamente imposible debido a limitaciones del
+                    servidor</strong><br>
+                <strong>⚫ La arquitectura parece diseñada para dificultar la descarga</strong> </br>
+                <strong>⚫ Aun así, replicar la API puede tener algunos usos (trazabilidad de total de registros,
+                    comenzar a construir el histórico a partir de ahora, etc.)
+                </strong>
+            </p>
+
+            <p>
+                El código que replica en python todo el comportamiento descrito en esta página se encuentra en el  <a href="https://github.com/violetaenroth/api-rnpdno">repositorio de GitHub</a>, donde también se encuentra la documentación completa de uso. 
+                A continuación se presenta un resumen de los hallazgos más importantes, así como una guía para entender el funcionamiento de la API y cómo replicarla.
+            </p>
+
+
+            <div class="divider"></div>
+
+            <!-- ====== SECTION 1: UI Funcionamiento ====== -->
+            <section id="funcionamiento">
+                <h2>Funcionamiento de la página</h2>
+
+                <!-- Subsection: Overview -->
+                <p>La <a href="https://consultapublicarnpdno.segob.gob.mx/consulta">página del RNPDNO</a> permite
+                    visualizar los registros de personas desaparecidas en dos formatos diferentes: vista cuadrícula,
+                    que incluye fotos o avatares dependiendo de si un registro en público o confidencial, o vista
+                    lista, que tiene un poco más de información pero sin fotos. Se pueden utilizar filtros de fecha, de estado y de municipio. Los filtros de fecha se refieren a la fecha de hechos (no hay documentación, pero lo asumo a partir del título del desplegable). La información de las vistas proviene de dos
+                    endpoints distintos, y ambas permiten únicamente explorar los registros de 10 en 10. </p>
+
+                <p>A lo largo de esta sección se mostrarán capturas de las vistas en distintos puntos temporales
+                    entre octubre y diciembre de 2025. <strong> A principios de enero de 2026, el endpoint detrás de la
+                    vista de lista dejó de funcionar. </strong></p>
+                    
+                <h3>Vista cuadrícula</h3>
+
+                <!-- Subsection: Grid View Content -->
+                <p>La vista en cuadrícula presenta los registros en un formato de tarjetas, mostrando nombre y
+                    apellido, edad actual, fecha de los hechos y estado. El problema principal que tiene esta vista
+                    desde la API es que el primary key (IDvictimadirecta) viene censurado también. Para registros censurados, la única
+                    información disponible es la dependencia que presenta el reporte y el estado.
+                    Esto quiere decir que todos los registros de un mismo estado, reportados por la misma
+                    dependencia, son indistinguibles entre sí. Esto es un gran obstáculo porque, al intentar
+                    recopilar todos los datos mediante el downloader implementado en python, no se puede hacer un
+                    upsert en la base de datos en la que se están recopilando los registros. Podemos obtener el mismo
+                    registro 10,
+                    15 o 100 veces en varias llamadas y no tendríamos forma de identificarlo.</p>
+
+                    <p>El campo fechahechos tiene fecha y hora con timestamp, y el campo ffechahechos es únicamente la fecha. Pasa lo mismo con los campos fechapercato y ffechapercato.</p>
+
+
+                <div class="image-container">
+                    <img src="images/vista_cuadricula.png" alt="Vista cuadrícula">
+                    <div class="caption">Vista en cuadrícula</div>
+                </div>
+
+                <div class="image-container">
+                    <img src="images/api_vista_cuadricula.png" alt="Api vista cuadrícula">
+                    <div class="caption">Muestra de respuesta de la API de la vista cuadrícula para registro confidencial</div>
+                </div>
+
+                <div class="image-container">
+                    <img src="images/api_vista_cuadricula_no_confidencial.png" alt="Api vista cuadrícula">
+                    <div class="caption">Muestra de respuesta de la API de la vista cuadrícula para registro no confidencial</div>
+                </div>
+
+
+
+
+                <h3>Vista lista</h3>
+
+                <!-- Subsection: List View Content -->
+                <p>La vista en lista organiza los registros en filas, y tiene el identificador del folio de búsqueda
+                    expuesto. La primera imagen muestra una captura de la vista, y la segunda imagen muestra
+                    el error que regresa la API actualmente. Cuando funcionaba, tenía la gran ventaja de que los registros confidenciales 
+                    no tenían el primary key censurado (aparentemente),
+                de manera que podían distinguirse entre sí los registros confidenciales.  </p>
+
+                <div class="image-container">
+                    <img src="images/vista_lista.png" alt="API Vista lista">
+                    <div class="caption">Vista en lista, no funciona, pero podemos ver los campos</div>
+                </div>
+
+                <div class="image-container">
+                    <img src="images/error_api_vista_lista.png" alt="Error API Vista lista">
+                    <div class="caption">Error actual de la API de la vista en lista</div>
+                </div>
+            </section>
+
+            <div class="divider"></div>
+
+            <!-- ====== SECTION 2: Discrepancias y Filtros ====== -->
+            <section id="discrepancias_filtros">
+                <h2>Discrepancias</h2>
+                <p>A lo largo de las pruebas que estuve haciendo, noté varias cosas raras, desde los filtros
+                    de fecha  que no sirven bien hasta los mismos formatos de la información recibida.  En la medida que pude intenté sacar capturas y documentar,
+                    pero en algunos casos no alcancé a sacar screenshots antes de que dejara de funcionar la vista de lista.
+                </p>
+
+
+                <h3>Inconsistencias en los filtros de fecha</h3>
+                <p>
+                    Los filtros de fecha parece que funcionan a partir de la fecha de hechos, lo que está muy claro es qué pasa con los registros que tienen este campo vacío. 
+                    Cuando intenté hacer descargar para años completos, noté que los totales segregados por mes o por semana no cuadran con los totales anuales. Al mirar en la <a href="https://versionpublicarnpdno.segob.gob.mx/Dashboard/Index" target="_blank">página de dashboards</a>, 
+                    vi que la opción de ver estadísticas por rango temporal tiene un checkbox que dice
+                    <i>Integrar al estadístico Cifra sin año de referencia</i>, y al marcarlo o desmarcarlo, el total anual cambia.
+                    Esto sugiere que la API probablemente esté incluyendo registros con fechahechos vacía en algunos
+                    casos, lo que no sé es cómo decide qué registros incluir o no. 
+                    Esto es un gran problema porque, al intentar hacer descargas de años completos, el código que hice
+                    falla, y si lo intento dividir en secciones mensuales, el total mensual es diferente al total anual, lo que hace
+                    que sea imposible hacer un seguimiento de los registros descargados y los que faltan por descargar 😔.
+                </p>
+
+                <div class="image-container">
+                    <img src="images/total_2024_sin_cifra.png" alt="sin fecha de referencia">
+                    <div class="caption">Total de 2024 sin incluir registros sin referencia de fecha</div>
+                </div>
+
+                <div class="image-container">
+                    <img src="images/total_2024_con_cifra.png" alt="con fecha de referencia">
+                    <div class="caption">Total de 2024 incluyendo registros sin referencia de fecha</div>
+                </div>
+
+                <p> Para probar si esto pasaba siempre, descargué los totales anuales desde 2012 hasta 2025, así como
+                    los totales mensuales de esos mismos años, y comparé ambos totales. </p>
+
+                <p>En el gráfico de barras podemos ver que la inconsistencia
+                    es sistemática en la API: la suma de los registros descargados por meses siempre supera
+                    significativamente el total de registros obtenidos mediante consultas anuales completas.
+                    Esta discrepancia no es uniforme a lo largo del tiempo. Si lo fuera, al menos sería posible
+                    ajustar los totales mensuales para que coincidan con los totales anuales, restando siempre el número de registros sin fechahechos.
+                    El primer gráfico muestra la comparación lado a lado, evidenciando que la brecha
+                    es consistente y considerable en la mayoría de los años. Algunos períodos destacan por magnitudes
+                    particularmente elevadas en sus discrepancias, como se observa en el segundo gráfico de
+                    barras con línea,
+                    donde la diferencia absoluta y el porcentaje de desviación fluctúan de un año a
+                    otro.
+                </p>
+
+                <p>En el gráfico de diferencias porcentuales se puede ver que el comportamiento de
+                    discrepancia comienza a empeorar bastante a partir de 2019, que coincide precisamente con la creación y el inicio de operación de la nueva
+                    plataforma.
+                    El heatmap de número de registros por mes subraya este hecho: 2019 concentra una densidad muy alta de registros
+                    mensuales comparada con años anteriores, lo que probablemente refleja el efecto de la adopción
+                    inicial de la plataforma. Es decir, cuando la plataforma comenzó a operar, se intensificó tanto el
+                    volumen de registros como, proporcionalmente, las inconsistencias en sus filtros.
+                </p>
+
+                <div class="image-container">
+                    <img src="images/comparacion_anual_vs_mensual.png" alt="comparativa_barras">
+                    <div class="caption">Comparación de totales anuales vs suma de totales mensuales.</div>
+                </div>
+
+                <div class="image-container">
+                    <img src="images/discrepancia_porcentual.png" alt="comparativa_porcentual">
+                    <div class="caption">Discrepancia porcentual entre totales anuales y suma de totales mensuales.
+                    </div>
+                </div>
+
+                <div class="image-container">
+                    <img src="images/heatmap_mensual.png" alt="heatmap">
+                    <div class="caption">Densidad de registros mensuales por año.</div>
+                </div>
+
+                <h3>Otras inconsistencias</h3>
+                <p>
+                    La API puede devolver registros diferentes dependiendo de si se
+                    consulta desde la vista de cuadrícula o desde la vista de lista para un mismo periodo de tiempo.
+                </p>
+
+                <p>
+                    También, al menos desde la vista de lista, a veces hay registros intrusos. No se trata de registros
+                    que no tienen fecha de hechos, sino de registros que no tienen nada que ver. 
+                   Por ejemplo, al hacer la llamada para recuperar datos de 1980 a 2006, aparecen registros 
+                   del futuro, donde la fecha de hechos es de 2020-2025. Hay otros registros que no tienen fecha de hechos, pero tienen fecha
+                   de captura también del futuro. Esto se puede ver en el archivo <code>raw_jsons/registros_1980-01-01_a_2006-12-31.json</code>
+                 en el repositorio. 
+                </p>
+
+                <p>
+                    Finalmente, a veces viene el campo de edad y otras no. Es decir que no viene vacío ni null,
+                    simplemente desaparece por completo 🪄. 
+                </p>
+
+
+         
+
+            </section>
+
+            <div class="divider"></div>
+
+            <!-- ====== SECTION 3: Backend y API ====== -->
+            <section id="backend">
+                <h2>Funcionamiento de la API</h2>
+
+                <p>Para desentrañar el funcionamiento del backend de la página, usé el inspector web para
+                    rastrear las peticiones. La próxima sección detalla el proceso para replicar el procedimiento, en
+                    caso de que cambie
+                    algún endpoint.
+                </p>
+                <div class="info-box warning">
+                    <p>⚠️ A mayo de 2026, en el frontend han cambiado algunos nombres de las funciones descritas abajo.
+                    Por ejemplo, la  función que se describe como <code>j7</code> ahora se llama <code>z7</code>, y la función que se describe como <code>vs</code> ahora se llama <code>$o</code>.
+                El código sigue siendo el mismo, solo le cambiaron de nombre. 
+</p>
+                </div>
+                <div class="flow-diagram">
+                    <div class="flow-step">
+                        <strong>Paso 1</strong>
+                        El usuario abre la página web del RNPD
+                        <br><code>https://consultapublicarnpdno.segob.gob.mx</code>
+                    </div>
+
+                    <div class="flow-arrow">↓</div>
+
+                    <div class="flow-step">
+                        <strong>Paso 2</strong>
+                        El frontend genera automáticamente un token JWT
+                        <br>El token se almacena en <code>localStorage</code> del navegador
+                    </div>
+
+                    <div class="flow-arrow">↓</div>
+
+                    <div class="flow-step">
+                        <strong>Paso 3</strong>
+                        Por cada petición, se cifra el endpoint usando AES-256
+                        <br>Clave y IV están hardcodeados en el JavaScript
+                    </div>
+
+                    <div class="flow-arrow">↓</div>
+
+                    <div class="flow-step">
+                        <strong>Paso 4</strong>
+                        Se envía petición POST con URL cifrada, token y filtros
+                        <br><code>POST /api/p/{url_cifrada}</code>
+                    </div>
+
+                    <div class="flow-arrow">↓</div>
+
+                    <div class="flow-step">
+                        <strong>Paso 5</strong>
+                        El servidor valida el token, descifra la URL y ejecuta la consulta
+                        <br>Devuelve JSON con los datos
+                    </div>
+                </div>
+
+
+                    <h3>Generación del token JWT</h3>
+
+                    <!-- Subsection: JWT Token Generation -->
+                    <p>
+                        Un <strong>JSON Web Token (JWT)</strong> es un estándar para transmitir información
+                        de forma segura entre partes. Para generar un token JWT, se necesita una clave secreta que se
+                        utiliza para firmar el token, y un payload que contiene la información que se desea transmitir.
+                        Teóricamente, esta clave debería ser secreta, pero la buena noticia✨
+                        es que esta clave esta hardcodeada en el JavaScript del frontend, lo que permite replicar el backend 
+                        en python.
+                        Actualmente en 2026, la clave es <code>"z427FcQwMSPZuFbIjNWGDqUpw1MEo1DG7cIOBSuI3ps"</code>.
+                    </p>
+
+                    <p> Este es un ejemplo de un token JWT con sus tres partes codificadas en Base64 separadas por
+                        puntos:</p>
+
+
+
+                    <pre><code><span class="comment">// estructura de un JWT</span>
+    <span class="string">HEADER</span>.<span class="string">PAYLOAD</span>.<span class="string">SIGNATURE</span>
+
+    <span class="comment">// ejemplo real del RNPDNO:</span>
+    eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.
+    eyJ1c2VyX2lkIjoicHVibGljIiwiZXhwIjoxNzM3ODI1NjAwfQ.
+    kL8mN9pQ2rS3tU4vW5xY6zA1bC2dE3fG4hI5jK6lM7n</code></pre>
+                    <p>Cuando el usuario carga la página web, el JavaScript del frontend ejecuta automáticamente la función
+                        <code>j7</code>
+                        para generar el token JWT:</p>
+
+
+                    <pre><code><span class="comment">// JavaScript del frontend - generación de token</span>
+    <span class="keyword">function</span> <span class="function">j7</span>(t, e) {
+        <span class="keyword">const</span> n = <span class="keyword">new</span> <span class="function">Date</span>();
+        <span class="comment">// clave secreta *guiño guiño*</span>
+        <span class="keyword">const</span> r = <span class="string">"z427FcQwMSPZuFbIjNWGDqUpw1MEo1DG7cIOBSuI3ps"</span>;  
+        
+        <span class="comment">// construir payload con fecha y datos</span>
+        <span class="keyword">let</span> i = {
+            <span class="string">fecha</span>: <span class="string">`${n.getDay()}-${n.getMonth()}-${n.getFullYear()}`</span>,
+            <span class="string">accion</span>: t,
+            <span class="string">data</span>: e
+        };
+        
+        <span class="keyword">let</span> a = JSON.<span class="function">stringify</span>(i);
+        <span class="keyword">let</span> o = sx.AES.<span class="function">encrypt</span>(a, r).<span class="function">toString</span>();
+        
+        <span class="keyword">return</span> <span class="function">btoa</span>(o);
+    }</code></pre>
+
+                    <div class="info-box info">
+                        <p>💡El token tiene una duración de 60 minutos desde su generación. </p>
+                    </div>
+                </section>
+
+                <!-- ====== URL Encryption Subsection ====== -->
+                <h3>Cifrado de URLs con CryptoJS</h3>
+                <p>
+                    La API no usa endpoints REST tradicionales. En su lugar, utiliza un método de cifrado AES-256
+                    con la biblioteca CryptoJS para cifrar los endpoints de la API, lo que resulta en URLs
+                    diferentes cada vez que se hace una petición.
+                    Esto es lo que hace que la API sea tan difícil de scrapear, porque no se puede simplemente iterar sobre
+                    páginas y filas, sino que se necesitq
+                    replicar el proceso de generación de URLs cifradas para cada petición. Si la API/los devs del RNPDNO fueran normales, se vería algo así: 
+                </p>
+            
+                <pre>
+                    <code>
+    https://api.example.com/api/get_info_matriz?page=1&rows=10
+    </code>
+</pre>
+
+                <p>pero en su lugar, se ve así:</p>
+
+                <pre>
+                    <code>
+    https://apiconsultapublicarnpdno.segob.gob.mx/api/p/<span class="string">U2FsdGVkX1-8xKj3vpQ...</span>
+</code>
+</pre>
+
+                <p>
+                    Lo peor de todo esto es que la clave de cifrado está <strong>hardcodeada en el
+                        frontend</strong>. Esto quiere decir que, aunque es posible replicar el proceso de
+                    generación de URLs cifradas, también es posible que el gobierno cambie esta clave en cualquier
+                    momento, lo que requeriría volver a analizar el código para encontrar la nueva clave.
+                    Toda esta capa de "seguridad" es fácilmente vulnerable a cambios
+                    arbitrarios por parte del gobierno, y por consiguiente, el acceso a los datos es muy inestable a
+                    largo plazo.
+                    Además, no tiene sentido cifrar algo y exponer la clave de cifrado en el mismo código, parece más 
+                    bien que 
+                    esta capa de cifrado no es para seguridad, sino para ofuscar las URLs y
+                    dificultar el scraping.
+                    En términos sencillos, es como si escondemos algo en un cofre con llave, pero dejamos la llave
+                    pegada al cofre. Cualquiera puede abrirlo, pero al menos no es "tan obvio" a simple vista.
+                </p>
+                <p>La función <code>vs</code> es la que se encarga de generar las URLs encriptadas:</p>
+
+                <pre><code><span class="comment">// JavaScript del frontend - generación de URLs</span>
+    <span class="keyword">function</span> <span class="function">vs</span>(t, e, n) {
+        <span class="keyword">const</span> r = <span class="keyword">new</span> <span class="function">Date</span>();
+        <span class="keyword">const</span> i = n;  <span class="comment">// token como clave de cifrado</span>
+        
+        <span class="comment">// construir payload con fecha y datos</span>
+        <span class="keyword">let</span> a = {
+            <span class="string">fecha</span>: <span class="string">`${r.getDay()}-${r.getMonth()}-${r.getFullYear()}`</span>,
+            <span class="string">accion</span>: t,
+            <span class="string">data</span>: e
+        };
+        
+        <span class="keyword">let</span> o = JSON.<span class="function">stringify</span>(a);
+        <span class="keyword">let</span> s = sx.AES.<span class="function">encrypt</span>(o, i).<span class="function">toString</span>();
+        
+        <span class="keyword">return</span> <span class="function">btoa</span>(s);
+    }</code></pre>
+
+                <p>
+                    El argumento <code>t</code> es el tipo de endpoint que se quiere generar, y puede ser:<br>
+                    ⚫get_paginador: Total de registros.<br>
+                    ⚫get_info_matriz: Registros desde la vista de cuadrícula. <br>
+                    ⚫get_info_lista: Registros desde la vista de lista.<br>
+                    ⚫municipios: Lista de municipios de un estado.<br>
+                    ⚫get_pdf_persona: Descarga el pdf asociado al reporte de una víctima.<br>
+                </p>
+                <p>
+                    El argumento <code>e</code> es generalmente el conjunto de filtros que se quieren aplicar, y <code>n</code>
+                    es el token. Hay otros endpoints que no logré ver qué hacen: get_info_carrusel y get_total_carrusel. Les puse checkpoints
+                    como se describe en la sección <i>Inspector web</i>, pero no vi ninguna diferencia ni ninguna pausa 🤷🏽‍♀️.
+                </p>
+                <!-- ====== HTTP Requests Subsection ====== -->
+                <h3>Peticiones HTTP</h3>
+
+                <p>
+                    Una vez obtenido el URL cifrado, solo se necesita hacer una petición POST a ese endpoint con el token en
+                    el header de Authorization, y
+                    en el body los parámetros de <i>rows</i> (cantidad de registros) y <i>page</i> (número de página). Los
+                    filtros como estado, municipio, rango de fechas, etc.
+                    se usan <strong>únicamente</strong> para generar el URL encriptado, pero no se envían como parte del
+                    body de la petición.
+                </p>
+
+                <pre><code><span class="comment">// petición HTTP completa</span>
+    <span class="keyword">POST</span> https://apiconsultapublicarnpdno.segob.gob.mx/api/p/<span class="string">U2FsdGVkX1-8xKj...</span>
+
+    <span class="comment">// Headers</span>
+    <span class="keyword">Content-Type:</span> application/JSON
+    <span class="keyword">Authorization:</span> Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+    <span class="comment">// Body (JSON)</span>
+    {
+        <span class="string">"rows"</span>: <span class="number">10</span>,
+        <span class="string">"page"</span>: <span class="number">1</span>
+    }</code></pre>
+
+                <p>Las peticiones a los endpoints de datos fallan si no se añade el payload de rows y página. El único endpoint
+                    que no requiere este payload es el de municipios, porque que no tiene paginación ni filtros.
+                </p>
+
+
+                <h3>Formato de los filtros</h3>
+
+                <p>Para los endpoints <code>get_paginador</code>, <code>get_info_matriz</code> y <code>get_info_lista</code>
+                el argumento <code>e</code> es un objeto JSON que puede contener los filtros de búsqueda:</p>
+
+                <pre><code>{
+        <span class="comment">// Filtros de búsqueda</span>
+        <span class="string">"folio"</span>: <span class="string">""</span>,                    <span class="comment">// Id de folio específico</span>
+        <span class="string">"estado"</span>: <span class="string">""</span>,                   <span class="comment">// Estado de la república</span>
+        <span class="string">"municipio"</span>: <span class="string">""</span>,                <span class="comment">// Municipio específico</span>
+        <span class="string">"rango"</span>: <span class="string">""</span>,                <span class="comment">// No tengo idea de qué es  </span>
+        <span class="string">"rango_fecha"</span>: [               <span class="comment">// Rango de fechas</span>
+            <span class="string">"2026-01-01T16:12:00.000Z"</span>,
+            <span class="string">"2026-01-17T16:12:00.000Z"</span>]}</code></pre>
+
+
+                <h4>1. Folio</h4>
+                <p>En los métodos para recuperar registros totales este campo siempre se envía vacío. 
+                </p>
+
+                <h4>2. Estado y municipio</h4>
+                <p>
+                    Los estados están ordenados en orden alfabético y con identificador como string, de manera que Aguascalientes es "1", Baja California es "2", ... Zacatecas es "32".
+                    Los municipios también están numerados y ordenados alfabéticamente. Siempre se puede consultar el
+                    desplegable de la página para ver el número asociado a cada estado y municipio, o se puede usar la función municipios del scraper.
+                   </p>
+
+
+                <pre><code>
+    <span class="comment">// Estado + municipio = Estado de México + Ecatepec</span>
+    <span class="string">"estado"</span>: <span class="string">"15"</span>,
+    <span class="string">"municipio"</span>: <span class="string">"33"</span>
+</code></pre>
+
+
+                <h4>3. Rango de fechas</h4>
+                <p>Filtra por fecha en formato ISO 8601. Algo extraño es que cuando no se usan filtros de fecha, esto ni siquiera se debe de enviar en los filtros.
+                    Es decir, este argumento únicamente puede ser un array de dos strings con formato de fecha, y no puede ser null o un array vacío porque da error. 
+                </p>
+                <pre><code><span class="comment">// Formato: YYYY-MM-DDTHH:mm:ss.sssZ (UTC)</span>
+    <span class="string">"rango_fecha"</span>: [
+        <span class="string">"2020-01-01T00:00:00.000Z"</span>,  <span class="comment">// Fecha desde</span>
+        <span class="string">"2024-12-31T23:59:59.999Z"</span>   <span class="comment">// Fecha hasta</span>
+    ]</code></pre>
+
+    <h4>4. Rango</h4>
+    <p>No sé qué es, pero parece ser que es necesario enviarlo en todas las peticiones. 
+    Se envía como string vacío, quizás tenga que ver con los endpoints que no logré descifrar.</p>
+
+
+                <h4>5. Paginación</h4>
+                <p>Aunque la API teóricamente acepta <code>rows</code> hasta 1000, en la práctica valores mayores a
+                        50 causan timeouts frecuentes. El valor más estable es <code>rows=10</code>.</p>
+                <pre><code><span class="comment">// Primera página, 10 registros</span>
+    <span class="string">"rows"</span>: <span class="number">10</span>,
+    <span class="string">"page"</span>: <span class="number">1</span>
+
+    <span class="comment">// Tercera página, 50 registros</span>
+    <span class="string">"rows"</span>: <span class="number">50</span>,
+    <span class="string">"page"</span>: <span class="number">3</span></code></pre>
+
+
+
+                <!-- ====== API Response Structure Subsection ====== -->
+                <h3>Estructura de la respuesta de la API</h3>
+
+                <pre><code>{
+        <span class="string">"result"</span>: {
+            <span class="string">"data"</span>: {
+                <span class="string">"data"</span>: [
+                    {
+                        <span class="string">"id"</span>: <span class="number">12345</span>,
+                        <span class="string">"folio"</span>: <span class="string">"RNPDNO-123456"</span>,
+                        <span class="string">"nombreCompleto"</span>: <span class="string">"JUAN PEREZ LOPEZ"</span>,
+                        <span class="string">"sexo"</span>: <span class="string">"MASCULINO"</span>,
+                        <span class="string">"edadAlMomentoDeDesaparicion"</span>: <span class="number">34</span>,
+                        <span class="string">"fechaDesaparicion"</span>: <span class="string">"2023-05-15"</span>,
+                        <span class="string">"entidadDesaparicion"</span>: <span class="string">"JALISCO"</span>,
+                        <span class="string">"estatusLocalizacion"</span>: <span class="string">"NO LOCALIZADA"</span>
+                    }
+                ],
+                <span class="string">"total"</span>: <span class="number">132182</span>,
+                <span class="string">"page"</span>: <span class="number">1</span>,
+                <span class="string">"records"</span>: <span class="number">132182</span>
+            }
+        }
+    }</code></pre>
+
+    <div class ="divider"></div>
+
+                <section id="inspector">
+                    <h2>Inspector web</h2>
+                    <p>
+                        El problema que tiene todo el código implementado en este repositorio es que, aunque ahora mismo funciona, no hay garantía de que vaya a seguir funcionando en el futuro, 
+                        porque el gobierno puede cambiar la clave de cifrado, los endpoints o cualquier otro elemento en cualquier momento.
+                       A continuación se detalla el proceso que se puede seguir para volver a rastrear como funciona el backend y adaptar el código a cualquier cambio que pueda haber en el futuro.
+                    En todas las capturas se muestra el inspector web de Google Chrome, pero el proceso es similar en otros navegadores como Firefox o Edge.
+                       Lo primero es abrir el inspector web del navegador, lo que se puede hacer de varias formas:
+                    </p>
+
+            <p> 
+                ⚫ Presionando F12 en Windows/Linux o Cmd + Option + I en Mac<br>
+                ⚫ Haciendo click derecho en la página y seleccionando "Inspeccionar"<br>
+                ⚫ Desde el menú del navegador en Herramientas de desarrollo
+            </p>
+            <p>Una vez abierto, la pestaña Network es donde podemos observar todas las peticiones que la página hace al servidor:</p>
+
+                    <p>
+⚫ Request URL: La URL a la que se hace la petición, que en este caso está cifrada. Con algo de suerte, algún día este URL será normal <br>
+⚫ Headers:  Encabezados, el tipo de request y el endpoint <br>
+⚫ Payload: Datos que se envían en cada petición<br>
+⚫ Response: JSON con los datos que devuelve la API <br> </p>
+
+<div class="info-box warning">
+    <p>Las capturas a continuación son de marzo y mayo de 2026, por lo que algunos nombres de funciones y endpoints pueden haber cambiado, pero el proceso para rastrear el funcionamiento del backend es el mismo.
+    </p>
+    </div>
+
+
+
+                <div class="image-container">
+                    <img src="images/inspector_network.png" alt="Inspector Network">
+                    <div class="caption">Pestaña network</div>
+                </div>
+
+                <p>Hay que localizar la llamada que tenga como respuesta un JSON con los datos que buscamos. Éste se ve así por ahora, aunque
+                    podría cambiar dependiendo de la vista desde la que se haga la consulta o de los cambios en el backend.
+                    Aún así, el formato de la respuesta es bastante consistente, y se puede identificar fácilmente porque tiene un campo llamado "data" que contiene 
+                    un array de objetos con los registros individuales.
+                </p>
+                
+                <div class="image-container">
+                    <img src="images/api_vista_cuadricula.png" alt="api call">
+                    <div class="caption">Ejemplo del formato a buscar en la pestaña Network</div>
+                </div>
+
+                <p>
+                    Una vez identificada la llamada, hay que ir a la pestaña Initiator.
+                    Esta pestaña muestra el código JavaScript que generó la llamada, lo que nos permite rastrear el proceso de generación de la URL y entender cómo se construyen las peticiones a la API. 
+                    Si algún día cambia el backend, esta es la forma más rápida de entender qué ha cambiado y cómo adaptarse a esos cambios.
+                    En este ejemplo, podemos ver que el script que genera los datos se llama <code>index-DiPcmp98.js</code>.
+                </p>
+                <div class="image-container">
+                    <img src="images/init.png" alt="initiator">
+                    <div class="caption">Cadena de llamadas</div>
+                </div>
+
+                <p> A partir de aquí, hay dos formas de analizar la información: se puede reconstruir completamente
+                    la cadena de llamadas HTTP, o buscar por keywords. 
+                    Esto último es más sencillo y rápido que analizar todo el call stack, solo podría suponer problemas si cambian los nombres
+                    de los endpoints.
+                </p>
+
+                <h3>Búsqueda por keywords</h3>
+                <p>
+                    Desde la pestaña Initiator, damos Control + click sobre cualquier línea para ir al código fuente.
+                    Esto nos llevará a la pestaña Sources, donde podemos hacer una búsqueda global (Control + F) para buscar por keywords.
+                </p>
+
+                <p>
+                    Si no cambia el funcionamiento, la función que genera el token y la que genera las URLS cifradas tendrán que tener necesariamente la palabra <code>AES.encrypt</code> en el código, porque es una función de la biblioteca CryptoJS.
+                A continuación se muestra el resultado de buscar directamente el keyword "AES.encrypt" 
+                en el código fuente, lo que nos lleva directamente a la función de generación de token <code>z7</code>,
+                y justo arriba la función de generación de URLs cifradas <code>$o</code> (antes vs).
+                </p>
+                <div class="image-container">
+                    <img src="images/keyword_AES_encrypt.png" alt="keyword aes">
+                    <div class="caption">Resultado de búsqueda por keyword "AES.encrypt" (mayo 2026)</div>
+                </div>  
+
+                <p>Para continuar al punto de poner los checkpoints, basta con buscar directamente el nombre de 
+                    algún endpoint en concreto, puede ser "get_paginador", "get_info_matriz", "get_info_lista", etc. 
+                    Esto nos llevará directamente a la función que genera la URL cifrada para ese endpoint, debe coincider con el nombre de la función 
+                de encriptado de URLs. Desde ahí se pueden seguir las
+                    instrucciones de la sección <i>Uso de filtros y checkpoint</i>.
+                </p>
+
+                <div class="image-container">
+                    <img src="images/keyword_get_paginador.png" alt="keyword get_paginador">
+                    <div class="caption">Resultado de búsqueda por keyword "get_paginador" (marzo 2026)</div>
+                </div>
+
+
+                <h3>Cadena de llamadas (call stack)</h3>
+
+
+                <p>La pestaña Initiator detalla la cadena de llamadas (call stack) de cómo se inició la solicitud de red. Cada línea representa una función o paso en el código JavaScript 
+                    que condujo a que el navegador hiciera la solicitud HTTP. 
+                    Lo que interesa de todo este call stack es encontrar el corte asíncrono.
+Cuando el navegador hace una petición al servidor, no puede quedarse parado esperando la respuesta, tiene que seguir funcionando. Así que "suelta" la ejecución, espera, y cuando llegan los datos "retoma" donde lo dejó. 
+Chrome marca ese momento con una línea en negritas que dice <strong>await in</strong> seguido del nombre de una función.
+                  Puede haber uno o varios de estos cortes apilados. La función importante es la del último await contando desde arriba, porque es la que estaba ejecutándose justo cuando se hizo la petición al servidor. 
+Por ejemplo, si hay un "await in d0", la función que habló con el backend es <code>d0</code>. Si debajo hay otro "await in B", significa que <code>B</code> llamó a <code>d0</code>, pero la lógica de la petición está en <code>d0</code>.</p>
+                
+
+
+                <p>Damos Ctrl + click en <code>d0</code> (o como se llame la última función con un await) para ver su contenido, y esto nos llevará directamente al código donde se inicia todo en la pestaña Sources.
+                    Aquí podemos ver que desde <code>d0</code> se hace una petición POST al endpoint generado por la función <code>vs</code>, 
+                    con una acción de tipo "get_info_matriz".
+                </p>
+
+                
+
+                <div class="image-container">
+                    <img src="images/inspector_sources_d0.png" alt="sources d0">
+                    <div class="caption">Pestaña Sources, desencadenador d0 (marzo 2026)</div>  
+                </div>      
+
+
+                <p>El script es muy largo, así que la forma más sencilla es buscar con Ctrl + F la palabra literal <code>vs(</code> e ir a la primera aparición.
+                En la imagen podemos ver que esto nos lleva <code>vs</code> y debajo está <code>j7</code> (generador de token).
+                <strong>Estas son las funciones clave para replicar todo.</strong>
+                Si cambian, entonces el proceso de descarga también cambiará, por lo que es importante saber dónde encontrarlas en el código 😊.
+
+                    Si cambian la clave de cifrado, probablemente la van a dejar harcodeada xD, 
+                    así que con buscar la función de generación de token se podrá encontrar fácilmente.
+                </p>
+
+                <div class="image-container">
+                    <img src="images/inspector_sources.png" alt="sources">
+                    <div class="caption">Pestaña Sources con búsqueda activa (marzo 2026)</div> 
+                </div>  
+
+                <h3>Uso de filtros y checkpoint</h3>
+
+                    
+                <p>Hasta este punto podemos recuperar los tokens y las URLs cifradas, pero falta el elemento de cómo utilizar los filtros.
+
+                    Para poder ver esto, es necesario "bloquear" las llamadas con un checkpoint y hacer una consulta con filtros desde la página, para ver qué datos se envían a esa función.
+                    Podemos bloquear cualquier otra función auxiliar que use <code>vs</code>, yo  elegí <code>get_paginador</code>.
+                    Si bloqueamos <code>vs</code>, al recargar la página tendremos que aprobar la continuación del debugger para la carga inicial (en múltiples ocasiones para cargar registros, fotos, etc...), luego elegir los filtros de fecha,
+                    estado (esto desencadenará otra pausa sobre <code>vs</code>, para recuperar los municipios) y luego dar play para ver los filtros aplicados. 
+                    En cambio, si bloqueamos <code>get_paginador</code>, solo tendremos que dar play una vez, justo después de elegir los filtros, y 
+                    así podemos recuperar directamente los datos que se envían a <code>vs</code> con los filtros ya aplicados.
+
+                </p>
+                <p>Para poner un checkpoint basta con dar click sobre el símbolo "-" en la línea donde se desea detener la ejecución.</p>
+
+                 <div class="image-container">
+                    <img src="images/inspector_sources_checkpoint.png" alt="sources">
+                    <div class="caption">Pestaña Sources con checkpoint (marzo 2026)</div> 
+                </div>
+
+                <p>Después hay que recargar la página y elegir filtros de fecha, de estado y municipio. Cuando estén elegidos y demos click en buscar, nos aparecerá el botón de play
+                    para continuar la ejecución. Mientras sigue pausada, podemos revisar el contenido de las variables que se le pasan a <code>vs</code> desde
+                    la pestaña Console. Los argumentos que buscamos en el caso de <code>get_paginador</code> son "n" y "r", y al introducirlos en la Console, 
+                    podemos ver que "n" son los filtros y "r" es el token. Los identificadores de estado y municipio se envían como string y el rango de fechas
+                    como un array de strings en formato ISO 8601. El parámetro misterioso "rango" se envía vacío.
+                </p>
+
+                 <div class="image-container">
+                    <img src="images/inspector_debugger_params.png" alt="params">
+                    <div class="caption">Debug de parámetros desde Console (marzo 2026)</div> 
+                </div>
+
+                  
+                </section>
+                <div class="divider"></div>
+
+                <section id="guia_uso">
+                    <h2>Guía de uso del código</h2>
+                    <p>En el README.md del repositorio se encuentra la documentación completa.</p>
+                
+                    <h3>Instalación</h3>
+                    <p>El paquete requiere <code>uv</code> como gestor de dependencias:</p>
+                    <pre><code class="bash">uv sync</code></pre>
+
+                    <h3>Uso básico</h3>
+                    <p>En notebooks de Jupyter se puede usar <code>await</code> directamente:</p>
+                    <pre><code><span class="keyword">from</span> rnpdno_downloader <span class="keyword">import</span> RNPDNODownloader
+
+dl = RNPDNODownloader()
+
+<span class="comment"># obtener el total de registros</span>
+total = <span class="keyword">await</span> dl.obtener_total()
+print(f<span class="string">"Total: {total}"</span>)
+
+<span class="comment"># obtener la primera página de datos</span>
+datos = <span class="keyword">await</span> dl.api.obtener_pagina(endpoint=<span class="string">"matriz"</span>, rows=<span class="number">10</span>, page=<span class="number">1</span>)</code></pre>
+
+                    <h3>Token JWT</h3>
+                    <p>El token se genera automáticamente en cada petición, pero también se puede obtener manualmente:</p>
+                    <pre><code>token = <span class="keyword">await</span> dl.api.obtener_token()
+print(f<span class="string">"Token: {token[:50]}..."</span>)</code></pre>
+                    <p><i>Se renueva automáticamente cada 100 peticiones o cada 50 minutos (máximo: 60 minutos)</i></p>
+
+                    <h3>Endpoints disponibles</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Método</th>
+                                <th>Endpoint</th>
+                                <th>Descripción</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>obtener_total()</code></td>
+                                <td>get_paginador</td>
+                                <td>Conteo de registros (con filtros opcionales)</td>
+                            </tr>
+                            <tr>
+                                <td><code>obtener_pagina()</code></td>
+                                <td>get_info_matriz</td>
+                                <td>Datos de vista cuadrícula (con paginación)</td>
+                            </tr>
+                            <tr>
+                                <td><code>obtener_municipios()</code></td>
+                                <td>municipios</td>
+                                <td>Catálogo de municipios por estado</td>
+                            </tr>
+                            <tr>
+                                <td><code>obtener_pagina()</code></td>
+                                <td>get_info_lista</td>
+                                <td>Datos de vista lista <span style="color: #d1286e;">❌ (API caída)</span></td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h3>Filtros</h3>
+                    <p>Los endpoints de datos aceptan filtros opcionales: <code>estado</code>, <code>municipio</code>, <code>fecha_inicio</code>, <code>fecha_fin</code></p>
+                    <pre><code><span class="comment"># obtener el total filtrado para 2018</span>
+total_2018 = <span class="keyword">await</span> dl.obtener_total(
+    fecha_inicio=<span class="string">"2018-01-01T00:00:00.000Z"</span>,
+    fecha_fin=<span class="string">"2018-12-31T23:59:59.999Z"</span>
+)
+
+<span class="comment"># primeros 10 registros de Jalisco en 2025 (estado="14")</span>
+datos = <span class="keyword">await</span> dl.api.obtener_pagina(
+    endpoint=<span class="string">"matriz"</span>,
+    rows=<span class="number">10</span>,
+    page=<span class="number">1</span>,
+    estado=<span class="string">"14"</span>,
+    fecha_inicio=<span class="string">"2025-01-01T00:00:00.000Z"</span>,
+    fecha_fin=<span class="string">"2025-06-30T23:59:59.999Z"</span>
+)</code></pre>
+
+                    <h3>Catálogo de municipios</h3>
+                    <pre><code><span class="comment"># obtener municipios de Jalisco (ID="14")</span>
+municipios_jalisco = <span class="keyword">await</span> dl.obtener_municipios(<span class="string">"14"</span>)
+print(f<span class="string">"Jalisco tiene {len(municipios_jalisco)} municipios"</span>)</code></pre>
+
+                    <h3>Descarga por periodos</h3>
+                    <p>Dado que la descarga completa sin filtros es muy inestable/imposible (ver sección <i>Experimentos</i>), la estrategia recomendada es descargar por periodos de tiempo.</p>
+                    <pre><code><span class="comment"># descargar datos de un periodo específico</span>
+<span class="keyword">await</span> dl.descargar(
+    endpoint=<span class="string">"matriz"</span>,
+    storage=<span class="string">"json"</span>,
+    filepath=<span class="string">"datos_2024.json"</span>,
+    rows=<span class="number">10</span>,
+    fecha_inicio=<span class="string">"2024-01-01T00:00:00.000Z"</span>,
+    fecha_fin=<span class="string">"2024-12-31T23:59:59.999Z"</span>,
+    concurrencia=<span class="number">2</span>,       <span class="comment"># Mantener bajo</span>
+    rps=<span class="number">2.0</span>
+)
+
+<span class="comment"># Descargar un estado específico y mes</span>
+<span class="keyword">await</span> dl.descargar(
+    endpoint=<span class="string">"matriz"</span>,
+    storage=<span class="string">"json"</span>,
+    filepath=<span class="string">"jalisco_enero_2024.json"</span>,
+    rows=<span class="number">10</span>,
+    estado=<span class="string">"14"</span>,
+    fecha_inicio=<span class="string">"2024-01-01T00:00:00.000Z"</span>,
+    fecha_fin=<span class="string">"2024-01-31T23:59:59.999Z"</span>
+)</code></pre>
+
+
+                    <div class="info-box warning">
+                        <p>Limitaciones importantes:</p>
+                        <p>⚫ La API tiene un límite de concurrencia muy bajo (máximo 2-3 workers)<br>
+                        ⚫ rows > 50 causa timeouts frecuentes; rows=10 es más estable<br>
+                        ⚫ Incluso con filtros, puede haber timeouts <br>
+                        ⚫ Ver sección <i>Experimentos</i> para más detalles sobre limitaciones
+                        </p>
+                    </div>
+                    
+                </section>
+
+                <div class="divider"></div>
+
+
+            <!-- ====== SECTION 4: experimentos ====== -->
+            <section id="experimentos">
+                <h2>Experimentos</h2>
+                 <h3>Experimento 1: ¿Los tokens afectan los resultados?</h3>
+                 <p>Una de las primeras pruebas que hice era verificar si los tokens afectaban los resultados.
+                     La hipótesis era que, dado que el token se genera con una fecha y hora específica, podría ser que los datos asociados a ese token también estuvieran "congelados" en el tiempo, es decir, que si se generaba un token nuevo después de un tiempo, los datos podrían cambiar o actualizarse.
+
+                    Esto resultó ser falso, los datos son deterministas. El token solo sirve para
+                    autenticación, <strong>no para versionar o particionar los datos</strong>. </p>
+                    </p>
+
+                    <h3>Experimento 2: ¿Aumentar <code>rows</code> acelera la descarga?</h3>
+                    <p>Desde la página web se utiliza una partición de 10 en 10 registros, lo que hace 
+                        que la descarga de los aprox. 132,000 registros tome mucho tiempo. 
+                        La hipótesis es que aumentando el número de registros por página se podrían descargar más datos por petición y acelerar el proceso.
+                        Hice pruebas con distintos valores de <code>rows</code> y este fue el resultado:
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>rows</th>
+                                <th>Páginas totales</th>
+                                <th>Estado</th>
+                                <th>Falló en página</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>10</td>
+                                <td>13,219</td>
+                                <td>Timeouts eventuales</td>
+                                <td>~320+</td>
+                            </tr>
+                            <tr>
+                                <td>50</td>
+                                <td>2,644</td>
+                                <td>Timeouts frecuentes</td>
+                                <td>~150+</td>
+                            </tr>
+                            <tr>
+                                <td>100</td>
+                                <td>1,322</td>
+                                <td>Timeouts constantes</td>
+                                <td>~80</td>
+                            </tr>
+                            <tr>
+                                <td>250</td>
+                                <td>529</td>
+                                <td>Falló rápidamente</td>
+                                <td><strong>28</strong></td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <p>
+                        ⚫ rows=10 es la configuración más estable, pero incluso así falla después de
+                            ~320 páginas (3,200 registros). Abajo en la captura podemos ver que, incluso desde el frontend, si damos click en
+                            el botón de navegación a la última página, simplemente deja de funcionar toda la página... 
+                        <br>
+                        ⚫ Con rows=250 llegué hasta la página 28 (7,000 registros). Las peticiones son
+                            más pesadas, lo que conlleva a timeouts más frecuentes. <br>
+                        ⚫ El patrón general es que más registros por página = falla
+                            más rápido.
+                        <br>
+                    </p>
+
+                                        <div class="image-container">
+                        <img src="images/timeout.png" alt="timeout">
+                        <div class="caption">Ejemplo de timeout al intentar navegar a la página 13,000 desde el frontend</div>
+                    </div>
+                    
+
+                <p>Por el error del endpoint de lista sabemos que el backend usa procedimientos SQL para recuperar los datos, 
+            así que mi teoría es que se hacen queries sin índices eficientes (a lo mejor algo del estilo <code>OFFSET</code> y <code>LIMIT</code>).</p>
+
+             <p> Otro problema importante es que a veces empiezan a fallar las llamadas pero regresan status 200, solo te das cuenta al revisar los
+                datos o cuando algo deja de funcionar. En la imagen se puede ver un ejemplo de esto, 
+                donde la respuesta tiene seguido de un JSON válido, un string de error que se va concatenando.
+                Esto pasa con los dos endpoints. 
+             </p>
+
+                    <div class="image-container">
+                        <img src="images/error_ambas_apis.png" alt="error JSON">
+                        <div class="caption">Ejemplo de respuesta con error concatenado</div>
+                    </div>
+
+
+
+
+
+
+                    <h3>Experimento 3: Concurrencia</h3>
+
+                    <p>
+                        Dado que el servidor no soporta un número alto de registros por página, intenté hacer múltiples peticiones concurrentes para acelerar la descarga. 
+                        La hipótesis era que, aunque cada petición individual fuera lenta, al hacer varias al mismo tiempo se podrían descargar más datos en menos tiempo.
+                        Sin ninguna sorpresa, esto resultó ser falso 🤡. El servidor parece tener un límite muy bajo de concurrencia, y a partir de 3 peticiones simultáneas empiezan a ocurrir timeouts.
+                    Incluso antes del timeout, se comienza a notar que las peticiones tardan cada vez más en responder.
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Workers</th>
+                                <th>Resultado</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>1</td>
+                                <td>Estable pero muy lento</td>
+                            </tr>
+                            <tr>
+                                <td>3</td>
+                                <td>Funciona hasta ~500 páginas, luego timeouts</td>
+                            </tr>
+                            <tr>
+                                <td>5</td>
+                                <td>Timeouts empiezan en ~300 páginas</td>
+                            </tr>
+                            <tr>
+                                <td>10</td>
+                                <td>Timeouts inmediatos</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <p>En la captura siguiente se pueden ver los logs al intentar hacer una descarga completa desde el endpoint de matriz.
+                        Al principio, se estiman 486 minutos para descargar todo con 3 workers, con una velocidad de 46 páginas por minuto, 
+                        pero después de un rato la estimación se vuelve cada vez más elevada, hasta que finalmente se detiene por completo.
+                        En los últimos renglones podemos ver que pasan hasta 10 minutos entre los logs de progreso, cuando al principio 
+                        pasaban 2-3 minutos. 
+                    </p>
+
+                    <div class="image-container">
+                        <img src="images/logs_eta.png" alt="eta logs">
+                        <div class="caption">Logs de descarga con 3 workers</div>
+                    </div>
+
+                    <p>El servidor <strong>no está diseñado para alta
+                            concurrencia</strong>.
+                        Puede ser que tenga pool de conexiones limitado, sin load balancer, o que los timeouts vengan de base de
+                        datos. Lo más molesto es que no regresa un código de error 400 o 429.
+                    </p>
+
+                <h3>Experimento 4: Intento de descarga masiva</h3>
+                <p>
+                    A partir de los experimentos anteriores, me di cuenta de que sería imposible intentar descargar de golpe los 132,000 registros.
+                Intenté entonces, con pocas esperanzas, hacer una separación por periodos de tiempo, comenzando desde 1980 hasta 2025 para  reducir el número de registros 
+                por consulta. Como ya había visto anteriormente que hay una distribución por fecha muy desigual, para los años 
+                con más registros (2018-2023) hice particiones por meses, y para los años con menos registros hice particiones anuales.
+
+                    Utilicé el endpoint de lista para poder usar el identificador IDVictimadirecta en caso de registros duplicados entre periodos.
+                    Después de iterar sobre todos los periodos, me di cuenta de que a veces había picos de registros en semanas o días en concreto,
+                    entonces hice divisiones aún más pequeñas. Por ejemplo, en diciembre de 2019 hay aproximadamente 9,000 registros, 
+                    y 8,000 de estos están concentrados del 1-8 de diciembre. 
+                </p>
+
+                <p>
+                    A pesar de esta estrategia, <strong>no fue posible descargar todos los registros</strong>.
+                    Verifiqué manualmente que los totales de cada periodo sumaban aproximadamente los totales de registros descargados, y aún así
+                    solo logré recuperar 63,000 registros, menos del 50% del total.
+                </p>
+                
+                <div class = "info-box warning">
+                    <p>⚠️ Uno de los problemas parece ser que el endpoint de lista no siempre regresa un identificador no censurado.
+                    Es decir que para registros confidenciales, podemos o bien obtener un 
+                    IDVictimadirecta genérico "CONFIDENCIAL", o una cadena de texto única.
+                </p>
+                </div>
+
+                <p>Otro posible problema 
+                    puede ser que simplemente el endpoint no regrese todos los registros 
+                    disponibles, ya que parece ser que nunca se construyó con intenciones de ser utilizado 
+                    para descargas masivas.</p>
+
+
+            <p>
+                En la carpeta <code>raw_jsons</code> dentro del repositorio dejo los datos en crudo en formato JSON.
+                Los archivos a veces tienen lapsos de tiempo encimados, eso sucede por que a veces descargaba por ejemplo periodos
+                de 1-2 meses, y luego me daba cuenta que faltaban registros y lo separaba en días o semanas.
+                Como la suma de las partes no es el total en este caso, los guardé en caso de que contengan IDs que no están 
+                en los archivos de intervalos de tiempo más cortos. 
+            </p>
+            <p>
+                En la carpeta <code>data</code> dejo dos datasets procesados, uno con una concatenación de los datos en crudo
+                y otro sin duplicados por IDVictimadirecta. 
+                Si se revisan los datos en el df con duplicados, se puede ver que hay registros que aparecen en múltiples periodos. 
+                Otra cosa que se puede ver es que hay 
+                aproximadamente 900 registros con IDVictimadirecta "CONFIDENCIAL", lo que sugiere que <b>el 
+                problema de los IDs genéricos NO es la razón principal por la que no pude obtener los datos completos.</b>
+            </p>
+
+            <div class = "divider"></div>
+
+
+                
+            <!-- ====== SECTION 5: Conclusiones ====== -->
+            <section id ="conclusiones">
+                <h2>Conclusiones</h2>
+
+                <p>
+                    Casi todo está mal, desde el diseño de los endpoints, la falta de documentación,
+                    la inestabilidad  de la API...
+                    Aún así, creo que el código puede tener cierta utilidad. Algunas ideas:
+                </p>
+
+                <p>
+                    ⚫Si se tiene ya acceso al histórico de datos, el código puede servir para mantener 
+                    el dataset actualizado, ya que los nuevos registros se pueden recuperar con filtros de fecha y tendrán menos registros
+                    por consulta, lo que reduce la probabilidad de timeouts. Con pruebas manuales, para 2026 cada mes tarda unos 20-25 minutos con 2 workers. <br>
+                    ⚫Puede ser útil para mantener un histórico del número de 
+                    desaparecidos totales. Hubo un tiempo en 2025 en que había 133,000 registros, y en enero de 2026
+      bajó a 132,000 (pueden ser eliminaciones o correcciones). Parece ser que una vez que se localiza a una persona,
+      se borra totalmente el registro de los endpoints de consulta, por lo que puede servir para mantener trazabilidad.
+    
+    </p>
+
+
+
+                <div class="info-box info">
+                    <strong>🔍 Transparencia gubernamental</strong>
+                    <p>Aunque los datos del RNPD son públicos por ley, la arquitectura de la API (cifrado, tokens, falta
+                        de documentación) dificulta el acceso programático. Una API REST documentada y abierta sería más
+                        apropiada para datos públicos.</p>
+                </div>
+            </section>
+
+            <!-- <footer>
+                <p><strong>Artículo técnico con fines educativos</strong></p>
+            </footer> -->
+        </main>
+    </div>
+
+</body>
+
+</html>
