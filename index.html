@@ -994,36 +994,42 @@ print(f<span class="string">"Jalisco tiene {len(municipios_jalisco)} municipios"
                     A pesar de esta estrategia, <strong>no fue posible descargar todos los registros</strong>.
                     Verifiqué manualmente que los totales de cada periodo sumaban aproximadamente los totales de registros descargados, y aún así
                     solo logré recuperar 63,000 registros, menos del 50% del total.
-                </p>
-                
-                <div class = "info-box warning">
-                    <p>⚠️ Uno de los problemas parece ser que el endpoint de lista no siempre regresa un identificador no censurado.
-                    Es decir que para registros confidenciales, podemos o bien obtener un 
-                    IDVictimadirecta genérico "CONFIDENCIAL", o una cadena de texto única.
-                </p>
-                </div>
-
-                <p>Otro posible problema 
-                    puede ser que simplemente el endpoint no regrese todos los registros 
-                    disponibles, ya que parece ser que nunca se construyó con intenciones de ser utilizado 
-                    para descargas masivas.</p>
-
-
-            <p>
-                En la carpeta <code>raw_jsons</code> dentro del repositorio dejo los datos en crudo en formato JSON.
+                    Hay dos posibilidades para los 69,000 registros restantes: <strong>no tienen fecha de hechos y por lo tanto
+                        solo son recuperables a través de la descarga completa sin filtros, o algunos de ellos sí tienen fecha de hechos pero los filtros de fecha no funcionan correctamente, lo que hace que esos registros no sean recuperables a través de la descarga por periodos
+                    </strong>.
+                 <p>
+                En la carpeta <code>raw_jsons</code> dentro del repositorio están los datos en crudo en formato JSON.
                 Los archivos a veces tienen lapsos de tiempo encimados, eso sucede por que a veces descargaba por ejemplo periodos
                 de 1-2 meses, y luego me daba cuenta que faltaban registros y lo separaba en días o semanas.
                 Como la suma de las partes no es el total en este caso, los guardé en caso de que contengan IDs que no están 
-                en los archivos de intervalos de tiempo más cortos. 
+                en los archivos de intervalos de tiempo más largos. Los datos de hasta el 2025 vienen del endpoint de lista, y los de 2026 del endpoint matriz, debido a que el 
+                endpoint de lista dejó de funcionar. 
             </p>
             <p>
-                En la carpeta <code>data</code> dejo dos datasets procesados, uno con una concatenación de los datos en crudo
+                En la carpeta <code>data</code> están dos datasets procesados, uno con una concatenación de los datos en crudo
                 y otro sin duplicados por IDVictimadirecta. 
-                Si se revisan los datos en el df con duplicados, se puede ver que hay registros que aparecen en múltiples periodos. 
-                Otra cosa que se puede ver es que hay 
-                aproximadamente 900 registros con IDVictimadirecta "CONFIDENCIAL", lo que sugiere que <b>el 
-                problema de los IDs genéricos NO es la razón principal por la que no pude obtener los datos completos.</b>
-            </p>
+                Si se revisan los datos en el dataset con duplicados, se puede ver que hay registros que aparecen hasta 130 veces.
+                    Esto quiere decir que son registros que aparecen en múltiples periodos de tiempo, lo que apoya la teoría de que los 
+                    filtros de fecha no sirven como deberían.  
+                    Otra cosa que se puede ver es que <strong>en los datos del endpoint de lista NO hay 
+                    registros con IDVictimadirecta "CONFIDENCIAL"</strong> (todos los JSONs antes de 2026), lo que sugiere que ese endpoint no regresa registros con identificador censurado y
+                    la razón principal por la que no se pudieron obtener los datos completos no está relacionada a la limitación de identificadores repetidos que tiene el endpoint de matriz.
+                </p>
+
+                    <div class = "info-box warning">
+                        <p>⚠️ Los filtros de fecha no funcionan correctamente, hay registros intrusos
+                        de periodos distintos al seleccionado.
+                     </p>
+                     <p>
+                        ⚠️ Parece ser que la única manera de recuperar el dataset completo es a través de 
+                         la descarga completa sin filtros de fecha. La API no parece haber sido diseñada con intención de permitir la descarga masiva.
+                     </p>
+                </div>
+
+            
+
+           
+            
 
             <div class = "divider"></div>
 
